@@ -1,0 +1,8 @@
+opencv-python
+transformers
+torch
+pandas
+torchvision
+kagglehub
+numpy
+matplotlib
