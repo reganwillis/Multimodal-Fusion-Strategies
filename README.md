@@ -19,4 +19,4 @@ The model architectures are classes in the training scripts:
 
 ## CMU-MOSI Dataset
 The CMU-MOSI dataset was used to train the models. The training scripts above read the dataset in and create PyTorch dataloaders with a custom PyTorch dataset: `MultimodalDataset`. Note that paths will need to be changed for training.
-The original CMU-MOSI dataset contains video clips of speakers. We use the middle frame of these clips as the image to train the facial expression recognition model. The dataset version uploaded [here](https://www.kaggle.com/datasets/reganw/cmu-mosi) has the images used.
+The original CMU-MOSI dataset contains video clips of speakers. We use the middle frame of these clips as the image to train the facial expression recognition model. The dataset version uploaded [here](https://www.kaggle.com/datasets/a61979992/cmu-mosi) has the images used.
