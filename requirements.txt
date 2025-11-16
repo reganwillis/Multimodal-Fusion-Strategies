@@ -6,3 +6,6 @@ torchvision
 kagglehub
 numpy
 matplotlib
+onnx
+onnxscript
+onnxruntime
