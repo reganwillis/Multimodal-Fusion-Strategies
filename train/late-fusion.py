@@ -138,7 +138,7 @@ if __name__ == "__main__":
     os.environ['KAGGLEHUB_CACHE'] = './'
     import kagglehub
     # Download latest version
-    path = kagglehub.dataset_download("reganw/cmu-mosi")
+    path = kagglehub.dataset_download("a61979992/cmu-mosi")
     print("Path to dataset files:", path)
 
     # constants
@@ -155,7 +155,7 @@ if __name__ == "__main__":
     import pandas as pd
 
     # process csv
-    df = pd.read_csv('./datasets/reganw/cmu-mosi/versions/2/label.csv')
+    df = pd.read_csv('./datasets/a61979992/cmu-mosi/versions/1/label.csv')
     print(df.head)
 
     labels = df['annotation']
@@ -174,7 +174,7 @@ if __name__ == "__main__":
     test_texts = []
     test_labels = []
     for i in range(len(labels)):
-        file_path = f'./datasets/reganw/cmu-mosi/versions/2/Raw_peak_frames/Raw_peak_frames/{str(video_ids[i])}/{str(clip_ids[i])}.jpg'
+        file_path = f'./datasets/a61979992/cmu-mosi/versions/1/Raw_peak_frames/Raw_peak_frames/{str(video_ids[i])}/{str(clip_ids[i])}.jpg'
         frame = cv2.imread(file_path)
 
         if mode[i] == 'train':
