@@ -1,5 +1,5 @@
 # Multimodal Fusion Strategies
-A multimodal approach to sentiment analysis that uses facial expression and sentiment analysis of spoken text. A vision model process the facial expressions and a BERT model processes the text. There are three levels of fusion: late, intermediate, and early. There are two vision models: MobileNetV2 and ViT. The paper is uploaded [here](./Exploring_Performance_Trade-offs_in_Multimodal_Vision–Language_Edge_Systems.pdf)
+A multimodal approach to sentiment analysis that uses facial expression and sentiment analysis of spoken text. A vision model process the facial expressions and a BERT model processes the text. There are three levels of fusion: late, intermediate, and early. There are two vision models: MobileNetV2 and ViT. [View the preprint](https://www.arxiv.org/abs/2511.21889).
 
 ## Running Training
 Scripts for training the models are in the [train](./train) folder.
