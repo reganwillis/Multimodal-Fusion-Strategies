@@ -1,11 +1,11 @@
 opencv-python
-transformers
-torch
+numpy<2
+torch==2.1.2
+transformers<4.38.0
 pandas
 torchvision
 kagglehub
 kagglesdk<0.1.24
-numpy
 matplotlib
 scikit-learn
 onnx

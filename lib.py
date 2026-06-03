@@ -24,16 +24,25 @@ def compute_accuracy_binary_single_neuron(outputs, targets):
 
 
 
-def train(model, dataloader, device, optimizer, epoch, num_epochs, total_steps, loss_fn, compute_accuracy):
+def train(model, arch, dataloader, device, optimizer, epoch, num_epochs, total_steps, loss_fn, compute_accuracy):
     running_loss = 0.0
     running_acc = 0.0
     model.train()
 
-    for i, (data, targets) in enumerate(dataloader):
-        data = data.to(device)
+    for i, (images, texts, targets) in enumerate(dataloader):
+        images = images.to(device)
         targets = targets.to(device)
 
-        outputs = model(data)
+        ids = texts['ids'].to(device, dtype=torch.long)
+        mask = texts['mask'].to(device, dtype=torch.long)
+        token_type_ids = texts['token_type_ids'].to(device, dtype=torch.long)
+
+        if arch == 'mobilenet' or arch == 'vit':
+            outputs = model(images)
+        elif arch == 'bert':
+            outputs = model(ids, mask, token_type_ids)
+        elif 'fusion' in arch:
+            outputs = model(images, input_ids=ids, attention_mask=mask, token_type_ids=token_type_ids)
 
         loss = loss_fn(outputs, targets)
         accuracy = compute_accuracy(outputs, targets)
@@ -58,17 +67,26 @@ def train(model, dataloader, device, optimizer, epoch, num_epochs, total_steps, 
     return running_loss, running_acc
 
 
-def validate(model, dataloader, device, epoch, num_epochs, total_steps, loss_fn, compute_accuracy):
+def validate(model, arch, dataloader, device, epoch, num_epochs, total_steps, loss_fn, compute_accuracy):
         running_loss = 0.0
         running_acc = 0.0
         model.eval()
 
         with torch.no_grad():
-            for i, (data, targets) in enumerate(dataloader):
-                data = data.to(device)
+            for i, (images, texts, targets) in enumerate(dataloader):
+                images = images.to(device)
                 targets = targets.to(device)
 
-                outputs = model(data)
+                ids = texts['ids'].to(device, dtype=torch.long)
+                mask = texts['mask'].to(device, dtype=torch.long)
+                token_type_ids = texts['token_type_ids'].to(device, dtype=torch.long)
+
+                if arch == 'mobilenet' or arch == 'vit':
+                    outputs = model(images)
+                elif arch == 'bert':
+                    outputs = model(ids, mask, token_type_ids)
+                elif 'fusion' in arch:
+                    outputs = model(images, input_ids=ids, attention_mask=mask, token_type_ids=token_type_ids)
 
                 loss = loss_fn(outputs, targets)
                 accuracy = compute_accuracy(outputs, targets)
@@ -144,13 +162,13 @@ def train_loop(model, arch, train_dataloader, val_dataloader, device, optimizer,
     val_total_steps = len(val_dataloader)
 
     for epoch in range(num_epochs):
-        train_loss, train_accuracy = train(model, train_dataloader, device, optimizer, epoch, num_epochs, train_total_steps, loss_fn, compute_accuracy)
+        train_loss, train_accuracy = train(model, arch, train_dataloader, device, optimizer, epoch, num_epochs, train_total_steps, loss_fn, compute_accuracy)
         print(
             f'TRAINING --> Epoch {epoch+1}/{num_epochs} DONE, ' +
             f'Avg Loss: {train_loss}, Avg Accuracy: {train_accuracy}'
         )
 
-        val_loss, val_accuracy = validate(model, val_dataloader, device, epoch, num_epochs, val_total_steps, loss_fn, compute_accuracy)
+        val_loss, val_accuracy = validate(model, arch, val_dataloader, device, epoch, num_epochs, val_total_steps, loss_fn, compute_accuracy)
         print(
             f'VALIDATION --> Epoch {epoch+1}/{num_epochs} DONE, ' +
             f'Avg Loss: {val_loss}, Avg Accuracy: {val_accuracy}'
@@ -165,32 +183,32 @@ def train_loop(model, arch, train_dataloader, val_dataloader, device, optimizer,
     return (train_losses, train_accs), (val_losses, val_accs), new_saved_model_path
 
 
-def evaluate(model, dataloader, device, total_steps, loss_fn, compute_accuracy):
+def evaluate(model, arch, dataloader, device, total_steps, loss_fn, compute_accuracy):
     running_loss = 0.0
     running_acc = 0.0
-    all_preds = []
-    all_targets = []
     model.eval()
 
     with torch.no_grad():
-        for i, (data, targets) in enumerate(dataloader):
-            data = data.to(device)
+        for i, (images, texts, targets) in enumerate(dataloader):
+            images = images.to(device)
             targets = targets.to(device)
 
-            outputs = model(data)
+            ids = texts['ids'].to(device, dtype=torch.long)
+            mask = texts['mask'].to(device, dtype=torch.long)
+            token_type_ids = texts['token_type_ids'].to(device, dtype=torch.long)
+
+            if arch == 'mobilenet' or arch == 'vit':
+                outputs = model(images)
+            elif arch == 'bert':
+                outputs = model(ids, mask, token_type_ids)
+            elif 'fusion' in arch:
+                outputs = model(images, input_ids=ids, attention_mask=mask, token_type_ids=token_type_ids)
 
             loss = loss_fn(outputs, targets)
             accuracy = compute_accuracy(outputs, targets)
 
-            # TODO: automatically choose different output processing based on binary or multiclass
-            #preds = outputs.argmax(dim=1)
-            preds = (torch.sigmoid(outputs) > 0.5).long().view(-1)
-
             running_loss += loss.item()
             running_acc += accuracy
-
-            all_preds.extend(preds.cpu().numpy().tolist())
-            all_targets.extend(targets.long().view(-1).cpu().numpy().tolist())
 
             if (i+1) % 256 == 0:
                 print(
@@ -202,7 +220,12 @@ def evaluate(model, dataloader, device, total_steps, loss_fn, compute_accuracy):
     running_loss = running_loss / total_steps
     running_acc = running_acc / total_steps
 
-    return running_loss, running_acc, all_preds, all_targets
+    print(
+        f'TEST --> DONE, ' +
+        f'Avg Loss: {running_loss}, Avg Accuracy: {running_acc}'
+    )
+
+    return running_loss, running_acc
 
 
 def score(all_preds, all_targets):

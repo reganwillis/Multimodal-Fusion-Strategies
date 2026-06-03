@@ -175,3 +175,9 @@ def load_dataset(batch_size, n_workers, finetune=False):
             (base_train_dataloader, base_val_dataloader, base_test_dataloader),
             (fine_tune_train_dataloader, fine_tune_val_dataloader, fine_tune_test_dataloader)
         )
+    else:
+        train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=n_workers)
+        val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size, shuffle=True, num_workers=n_workers)
+        test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=n_workers)
+
+        return ((train_dataloader, val_dataloader, test_dataloader))
