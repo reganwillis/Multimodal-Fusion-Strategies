@@ -1,5 +1,6 @@
 import os
 import lib
+import csv
 import torch
 import random
 import argparse
@@ -101,7 +102,7 @@ if __name__ == "__main__":
         arch = arch + args.vision_model
         dataloaders = load_dataset(batch_size=BATCH_SIZE, n_workers=N_WORKERS, finetune=False)
         train_dataloader, val_dataloader, test_dataloader = dataloaders
-        n_epochs = 300
+        n_epochs = 100
     else:
         raise ValueError(f'Invalid model architecture {arch}')
 
@@ -134,6 +135,13 @@ if __name__ == "__main__":
     print('Training model..')
     (train_losses, train_accs), (val_losses, val_accs), path = lib.train_loop(model, arch, train_dataloader, val_dataloader, DEVICE, optimizer, n_epochs, loss_fn, compute_accuracy, save_path=Path(arch+'_out'))
 
+    lib.plot_epoch_metrics(np.arange(n_epochs), [train_losses, val_losses],
+                           ['Train', 'Validation'], arch, 'Loss',
+                           arch+'_out/loss.png')
+    lib.plot_epoch_metrics(np.arange(n_epochs), [train_accs, val_accs],
+                           ['Train', 'Validation'], arch, 'Accuracy',
+                           arch+'_out/acc.png')
+
     # evaluate
     print('Loading best model from training for evalution..')
     model.load_state_dict(torch.load(path))
@@ -141,4 +149,13 @@ if __name__ == "__main__":
     print('Evaluating model..')
     test_loss, test_accuracy = lib.evaluate(model, arch, test_dataloader, DEVICE, len(test_dataloader), loss_fn, compute_accuracy)
 
-    # TODO: save metrics to CSV
+    # save metrics to CSV
+    path = arch+'_out/perf.csv'
+    header = ["Architecture", "Epochs", "Test Loss", "Test Accuracy"]
+
+    with open(path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerow([arch, n_epochs, test_loss, test_accuracy])
+    print('Performance results saved:', path)
+
