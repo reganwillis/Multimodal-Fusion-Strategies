@@ -109,6 +109,8 @@ class BERTForSentimentAnalysis(BertModel):
         self.dropout = torch.nn.Dropout(0.3)
         self.classifier = torch.nn.Linear(config.hidden_size, self.N_CLASSES)
 
+        self.post_init()
+
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None,):
         outputs = self.bert(
             input_ids,
@@ -150,7 +152,20 @@ class BiDirectionalCrossAttnBlock(torch.nn.Module):
             torch.nn.ReLU(),
             torch.nn.Linear(hidden_dim * 4, hidden_dim),
         )
+
+    def _to_tokens(self, x):
+        return x
+        if x.dim() == 2:
+            return x.unsqueeze(1)
+        elif x.dim() == 3:
+            return x
+        elif x.dim() == 4:
+            return x.flatten(2).transpose(1, 2)
+
     def forward(self, text_tokens, vision_tokens, text_key_padding_mask=None):
+        text_tokens = self._to_tokens(text_tokens)
+        vision_tokens = self._to_tokend(vision_tokens)
+
         # text queries vision
         #print(text_tokens.shape, vision_tokens.shape)
         text_attn, _ = self.text_to_vision(
@@ -415,15 +430,15 @@ class MidFusion(torch.nn.Module):
 
             # FUSE EMBEDDINGS
             if i == self.fuse_place[0]-1 or i == self.fuse_place[1]-1 or i == self.fuse_place[2]-1:
+                if self.vision_model == 'mobilenet':
+                    hidden_states_vision = self.conv_layers[j](hidden_states_vision).squeeze(-1).squeeze(-1)
+                    hidden_states_vision = self.vision_proj(hidden_states_vision)
+                elif self.vision_model == 'vit':
+                    hidden_states_vision = hidden_states_vision[:, 0, :]
+                hidden_states_bert = hidden_states_bert[:, 0, :]
                 if self.cross_attn_fusion:
                     hidden_states_bert, hidden_states_vision = self.cross_attn_layers[j](hidden_states_bert, hidden_states_vision, None)
-                if self.vision_model == 'mobilenet':
-                    flat1 = self.conv_layers[j](hidden_states_vision).squeeze(-1).squeeze(-1)
-                    flat1 = self.vision_proj(flat1)
-                elif self.vision_model == 'vit':
-                    flat1 = hidden_states_vision[:, 0, :]
-                flat2 = hidden_states_bert[:, 0, :]
-                x = torch.cat((flat1, flat2), dim=1)
+                x = torch.cat((hidden_states_vision, hidden_states_bert), dim=1)
                 x = self.fusion_layers[j](x)
                 fused_outputs.append(x)
                 j = j + 1
@@ -586,18 +601,18 @@ class EarlyFusion(torch.nn.Module):
 
         # FUSE
 
+        if self.vision_model == 'mobilenet':
+            # early fusion - cnn with mobilenet output + bert output as input
+            hidden_states_vision = self.pool_layer(hidden_states_vision).squeeze(-1).squeeze(-1)
+            hidden_states_vision = self.vision_proj(hidden_states_vision)
+        elif self.vision_model == 'vit':
+            hidden_states_vision = hidden_states_vision[:, 0, :]
+        hidden_states_bert = hidden_states_bert[:, 0, :]
+
         if self.cross_attn_fusion:
             hidden_states_bert, hidden_states_vision = self.cross_attn(hidden_states_bert, hidden_states_vision)
 
-        if self.vision_model == 'mobilenet':
-            # early fusion - cnn with mobilenet output + bert output as input
-            flat1 = self.pool_layer(hidden_states_vision).squeeze(-1).squeeze(-1)
-            flat1 = self.vision_proj(flat1)
-        elif self.vision_model == 'vit':
-            flat1 = hidden_states_vision[:, 0, :]
-        flat2 = hidden_states_bert[:, 0, :]
-
-        concat = torch.cat((flat1, flat2), dim=1)
+        concat = torch.cat((hidden_states_vision, hidden_states_bert), dim=1)
 
         x = self.attn_net(concat)
 

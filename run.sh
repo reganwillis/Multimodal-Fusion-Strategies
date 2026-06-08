@@ -1,8 +1,7 @@
 #!/bin/bash
 
 DEBUG=--debug
-CROSS_ATTN_FUSION= 
-#--cross-attn-fusion
+CROSS_ATTN_FUSION=--cross-attn-fusion
 
 # install dependencies
 # TODO: only create new venv if this dir does not exist
