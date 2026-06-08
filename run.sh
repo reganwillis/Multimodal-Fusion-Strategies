@@ -1,12 +1,13 @@
 #!/bin/bash
 
 DEBUG=--debug
-CROSS_ATTN_FUSION=--cross-attn-fusion
+CROSS_ATTN_FUSION= 
+#--cross-attn-fusion
 
 # install dependencies
 # TODO: only create new venv if this dir does not exist
 #python3 -m venv venv
-source venv/bin/activate
+source venv2/bin/activate
 #pip install -r requirements.txt
 
 # clear output dirs
