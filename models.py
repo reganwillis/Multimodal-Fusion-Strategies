@@ -12,6 +12,8 @@ from transformers.models.vit import ViTModel
 from transformers.models.vit import ViTPreTrainedModel
 from transformers.models.vit.configuration_vit import ViTConfig
 
+from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions
+
 
 class MobileNetV2ForFacialExpressionRecognition(MobileNetV2PreTrainedModel):
     """
@@ -115,7 +117,7 @@ class BERTForSentimentAnalysis(BertModel):
             return_dict=False
         )
         x = outputs[1]
-        self.dropout(x)
+        x = self.dropout(x)
 
         if self.multimodal:
             return x
@@ -125,41 +127,78 @@ class BERTForSentimentAnalysis(BertModel):
             return logits
 
 
+class BiDirectionalCrossAttnBlock(torch.nn.Module):
+
+    def __init__(self, hidden_dim, num_heads=12):
+        super().__init__()
+        self.text_to_vision = torch.nn.MultiheadAttention(hidden_dim, num_heads)
+
+        self.vision_to_text = torch.nn.MultiheadAttention(hidden_dim, num_heads)
+
+        self.text_norm1 = torch.nn.LayerNorm(hidden_dim)
+        self.text_norm2 = torch.nn.LayerNorm(hidden_dim)
+        self.text_ffn = torch.nn.Sequential(
+            torch.nn.Linear(hidden_dim, hidden_dim * 4),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim * 4, hidden_dim),
+        )
+
+        self.vision_norm1 = torch.nn.LayerNorm(hidden_dim)
+        self.vision_norm2 = torch.nn.LayerNorm(hidden_dim)
+        self.vision_ffn = torch.nn.Sequential(
+            torch.nn.Linear(hidden_dim, hidden_dim * 4),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim * 4, hidden_dim),
+        )
+    def forward(self, text_tokens, vision_tokens, text_key_padding_mask=None):
+        # text queries vision
+        #print(text_tokens.shape, vision_tokens.shape)
+        text_attn, _ = self.text_to_vision(
+            query=text_tokens,
+            key=vision_tokens,
+            value=vision_tokens
+        )
+        text_tokens = self.text_norm1(text_tokens + text_attn)
+        #text_tokens = self.text_norm2(text_tokens + self.text_ffn(text_tokens))
+
+        # vision queries text
+        vision_attn, _ = self.vision_to_text(
+            query=vision_tokens,
+            key=text_tokens,
+            value=text_tokens,
+            key_padding_mask=text_key_padding_mask
+        )
+        vision_tokens = self.vision_norm1(vision_tokens + vision_attn)
+        #vision_tokens = self.vision_norm2(vision_tokens + self.vision_ffn(vision_tokens))
+
+        return text_tokens, vision_tokens
+
+
 class LateFusion(torch.nn.Module):
 
-    def __init__(self, vision_model, fer_weights, bert_weights):
+    def __init__(self, vision_model, cross_attn_fusion):
         super().__init__()
         self.N_CLASSES = 2
+        self.cross_attn_fusion = cross_attn_fusion
 
         if vision_model == 'mobilenet':
-            fer_config = MobileNetV2Config()
-            self.fer = MobileNetV2ForFacialExpressionRecognition(fer_config, multimodal=True)
-            self.fer.load_state_dict(torch.load(fer_weights))
-            self.fer.multimodal = True
-            self.fer.eval()
-            for name, param in self.fer.named_parameters():
-                param.requires_grad = False
-            fer_output_size = 1792
+            cfg = MobileNetV2Config()
+            self.fer = MobileNetV2ForFacialExpressionRecognition(cfg, True)
         elif vision_model == 'vit':
-            fer_config = ViTConfig()
-            self.fer = ViTForFacialExpressionRecognition(fer_config, multimodal=True)
-            self.fer.load_state_dict(torch.load(fer_weights))
-            self.fer.multimodal = True
-            self.fer.eval()
-            for name, param in self.fer.named_parameters():
-                param.requires_grad = False
-            fer_output_size = 768
+            cfg = ViTConfig()
+            self.fer = ViTForFacialExpressionRecognition(cfg, True)
+        cfg = BertConfig()
+        self.bert = BERTForSentimentAnalysis(cfg, True)
 
-        bert_config = BertConfig()
-        self.bert = BERTForSentimentAnalysis(bert_config, multimodal=True)
-        self.bert.load_state_dict(torch.load(bert_weights))
-        self.bert.multimodal = True
-        self.bert.eval()
-        for name, param in self.bert.named_parameters():
-            param.requires_grad = False
-        bert_output_size = 768
+        self.dim = 768
+        self.text_proj = torch.nn.Linear(self.bert.config.hidden_size, self.dim)
+        self.vision_proj = torch.nn.LazyLinear(self.dim)
+        if self.cross_attn_fusion:
+            print('Initializing Cross Attention Block..')
+            self.cross_attn = BiDirectionalCrossAttnBlock(self.dim)
 
-        self.linear = torch.nn.Linear(fer_output_size+bert_output_size, 512)
+        # classification head
+        self.linear = torch.nn.LazyLinear(512)
         self.relu = torch.nn.ReLU()
         self.dropout = torch.nn.Dropout(0.3)
         self.linear2 = torch.nn.Linear(512, 256)
@@ -172,6 +211,25 @@ class LateFusion(torch.nn.Module):
         fer_output = self.fer(images)
         bert_output = self.bert(input_ids, attention_mask, token_type_ids)
 
+        # project to same space
+        fer_output = self.vision_proj(fer_output)
+        bert_output = self.text_proj(bert_output)
+
+        if self.cross_attn_fusion:
+            bert_output, fer_output = self.cross_attn(bert_output, fer_output, None)
+        # pool
+        #fer_output = fer_output.pooler_output
+        #bert_output = bert_output.pooler_output
+        #print(fer_output.shape)
+        #print(bert_output.shape)
+        #fer_output = fer_output[:, 0, :]
+        #bert_output = bert_output[:, 0, :]
+        #print(fer_output.shape)
+        #print(bert_output.shape)
+        #print('exiting..')
+        #exit()
+
+        # concat
         output = torch.cat((fer_output, bert_output), dim=1)
         x = self.linear(output)
         x = self.relu(x)
@@ -197,18 +255,35 @@ class AttentionFusion(torch.nn.Module):
         return self.norm(self.fc(attn_out.squeeze(1)))
 
 
+class LinearFusion(torch.nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.fc = torch.nn.LazyLinear(dim)
+        self.norm = torch.nn.LayerNorm(dim)
+
+    def forward(self, x):
+        return self.norm(self.fc(x))
+
+
 class MidFusion(torch.nn.Module):
     """
     Intermediate fusion of a vision model and BERT.
     """
-    def __init__(self, vision_model, fuse_place=[8,6,4,4]):
+    def __init__(self, vision_model, cross_attn_fusion, attn_fusion=False, fuse_place=[8,6,4,4]):
         super().__init__()
         self.N_CLASSES = 2
         self.vision_model = vision_model
+        self.cross_attn_fusion = cross_attn_fusion
+        self.attn_fusion = attn_fusion
         self.fuse_place = fuse_place
+        self.TRUNCATE_IDX = self.fuse_place[3]
+        self.dim = 768
+
+        self.lin = torch.nn.LazyLinear(self.dim)  # TODO - clean
 
         cfg = BertConfig()
         self.bert = BertModel(cfg).from_pretrained('bert-base-uncased')
+        self.text_proj = torch.nn.Linear(self.bert.config.hidden_size, self.dim)
 
         if vision_model == 'mobilenet':
             cfg = MobileNetV2Config()
@@ -218,7 +293,10 @@ class MidFusion(torch.nn.Module):
             self.conv_layers = torch.nn.ModuleList()
             self.fusion_layers = torch.nn.ModuleList()
 
-            self.pool_layers.append(torch.nn.MaxPool2d(kernel_size=(28, 28), stride=1))
+            self.vision_proj = torch.nn.LazyLinear(self.dim)
+
+            #self.pool_layers.append(torch.nn.MaxPool2d(kernel_size=(28, 28), stride=1))
+            self.pool_layers.append(torch.nn.AdaptiveAvgPool2d((1,1)))
 
             self.conv_layers.append(torch.nn.Sequential(
                 torch.nn.Conv2d(48, 64, kernel_size=3, padding=1),
@@ -226,19 +304,9 @@ class MidFusion(torch.nn.Module):
                 torch.nn.ReLU(),
                 torch.nn.MaxPool2d(kernel_size=(28, 28), stride=1)
             ))
-            self.fusion_layers.append(torch.nn.Linear(832, 512))  # 3
 
-            self.pool_layers.append(torch.nn.MaxPool2d(kernel_size=(14, 14), stride=1))
-
-            self.conv_layers.append(torch.nn.Sequential(
-                torch.nn.Conv2d(88, 64, kernel_size=3, padding=1),
-                torch.nn.BatchNorm2d(64),
-                torch.nn.ReLU(),
-                torch.nn.MaxPool2d(kernel_size=(14, 14), stride=1)
-            ))
-            self.fusion_layers.append(torch.nn.Linear(832, 512))  # 6
-
-            self.pool_layers.append(torch.nn.MaxPool2d(kernel_size=(14, 14), stride=1))
+            #self.pool_layers.append(torch.nn.MaxPool2d(kernel_size=(14, 14), stride=1))
+            self.pool_layers.append(torch.nn.AdaptiveAvgPool2d((1,1)))
 
             self.conv_layers.append(torch.nn.Sequential(
                 torch.nn.Conv2d(88, 64, kernel_size=3, padding=1),
@@ -246,16 +314,40 @@ class MidFusion(torch.nn.Module):
                 torch.nn.ReLU(),
                 torch.nn.MaxPool2d(kernel_size=(14, 14), stride=1)
             ))
-            self.fusion_layers.append(AttentionFusion(832))  # 7
-            self.linear1 = torch.nn.Linear(1856, 512)
+
+            #self.pool_layers.append(torch.nn.MaxPool2d(kernel_size=(14, 14), stride=1))
+            self.pool_layers.append(torch.nn.AdaptiveAvgPool2d((1,1)))
+
+            self.conv_layers.append(torch.nn.Sequential(
+                torch.nn.Conv2d(88, 64, kernel_size=3, padding=1),
+                torch.nn.BatchNorm2d(64),
+                torch.nn.ReLU(),
+                torch.nn.MaxPool2d(kernel_size=(14, 14), stride=1)
+            ))
         elif vision_model == 'vit':
             cfg = ViTConfig()
             self.vit = ViTModel(cfg).from_pretrained('google/vit-base-patch16-224')
             self.fusion_layers = torch.nn.ModuleList()
-            self.fusion_layers.append(torch.nn.Linear(1536, 512))  # 3
-            self.fusion_layers.append(torch.nn.Linear(1536, 512))  # 6
-            self.fusion_layers.append(AttentionFusion(1536))  # 7
-            self.linear1 = torch.nn.Linear(2560, 512)
+
+            self.vision_proj = torch.nn.Linear(self.vit.config.hidden_size, self.dim)
+        if self.cross_attn_fusion:
+            print('Initializing Cross Attention Block..')
+            self.cross_attn_layers = torch.nn.ModuleList()
+            self.cross_attn_layers.append(BiDirectionalCrossAttnBlock(self.dim))
+            self.cross_attn_layers.append(BiDirectionalCrossAttnBlock(self.dim))
+            self.cross_attn_layers.append(BiDirectionalCrossAttnBlock(self.dim))
+        elif self.attn_fusion:
+            self.fusion_layers.append(AttentionFusion(self.dim))
+            self.fusion_layers.append(AttentionFusion(self.dim))
+            self.fusion_layers.append(AttentionFusion(self.dim))
+        else:
+            # standard
+            self.fusion_layers.append(LinearFusion(512))  # 3
+            self.fusion_layers.append(LinearFusion(512))  # 6
+            self.fusion_layers.append(LinearFusion(512))  # 7
+
+        # classification head
+        self.linear1 = torch.nn.LazyLinear(512)
         self.relu1 = torch.nn.ReLU()
         self.dropout1 = torch.nn.Dropout(0.3)
         self.linear2 = torch.nn.Linear(512, 256)
@@ -263,7 +355,133 @@ class MidFusion(torch.nn.Module):
         self.dropout2 = torch.nn.Dropout(0.3)
         self.out = torch.nn.Linear(256, self.N_CLASSES)
 
+    def get_vision_model_hidden_states(self, pixel_values, bool_masked_pos=None, interpolate_pos_encoding=None):
+        if self.vision_model == 'mobilenet':
+            hidden_states_vision = self.mobilenet_v2.conv_stem(pixel_values)
+        elif self.vision_model == 'vit':
+            vit_embedding_output = self.vit.embeddings(
+            pixel_values, bool_masked_pos=bool_masked_pos, interpolate_pos_encoding=interpolate_pos_encoding
+        )
+            hidden_states_vision = vit_embedding_output
+        return hidden_states_vision
+
+    def bert_embeddings_and_attention_mask(self, input_ids, position_ids, token_type_ids, inputs_embeds, past_key_values=None, attention_mask=None, encoder_hidden_states=None, encoder_attention_mask=None):
+        #self.bert.config.use_cache = False  # FIXME: disabling cache due to versioning differences
+        if self.bert.config.use_cache and past_key_values is None:
+            from transformers.cache_utils import DynamicCache, EncoderDecoderCache
+            past_key_values = (
+                    EncoderDecoderCache(DynamicCache(config=self.bert.config), DynamicCache(config=self.bert.config))
+                    if encoder_hidden_states is not None or self.bert.config.is_encoder_decoder
+                    else DynamicCache(config=self.bert.config)
+            )
+
+        past_key_values_length = past_key_values.get_seq_length() if past_key_values is not None else 0
+
+        embedding_output = self.bert.embeddings(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            token_type_ids=token_type_ids,
+            inputs_embeds=inputs_embeds,
+            past_key_values_length=past_key_values_length,
+        )
+
+        attention_mask, encoder_attention_mask = self.bert._create_attention_masks(
+            attention_mask=attention_mask,
+            encoder_attention_mask=encoder_attention_mask,
+            embedding_output=embedding_output,
+            encoder_hidden_states=encoder_hidden_states,
+            past_key_values=past_key_values,
+        )
+
+        return past_key_values, past_key_values_length, embedding_output, attention_mask, encoder_attention_mask
+
     def forward(
+        self,
+        pixel_values=None,  # mobilenet val
+        bool_masked_pos=None,
+        interpolate_pos_encoding=None,
+        labels=None,  # mobilenet val
+        input_ids=None,  # bert val
+        attention_mask=None,  # bert val
+        token_type_ids=None,  # bert val
+        position_ids=None,
+        head_mask=None,
+        inputs_embeds=None,
+        encoder_hidden_states=None,
+        encoder_attention_mask=None,
+        past_key_values=None,
+        **kwargs
+    ):
+        # VISION MODEL - HIDDEN STATES
+        hidden_states_vision = self.get_vision_model_hidden_states(pixel_values, bool_masked_pos, interpolate_pos_encoding)
+
+        # BERT - HIDDEN STATES
+        past_key_values, past_key_values_length, hidden_states_bert, attention_mask, encoder_attention_mask = self.bert_embeddings_and_attention_mask(input_ids, position_ids, token_type_ids, inputs_embeds, past_key_values, attention_mask, encoder_hidden_states, encoder_attention_mask)
+
+        # JOINT ENCODER
+        x = None
+        fused_outputs = []
+        j = 0
+        for i in range(len(self.bert.encoder.layer)-self.TRUNCATE_IDX):
+            #print('LAYER', i+1)
+            if self.vision_model == 'mobilenet':
+                # mobilenet - layer modules (inverted residuals)
+                hidden_states_vision = self.mobilenet_v2.layer[i](hidden_states_vision)
+            elif self.vision_model == 'vit':
+                #hidden_states_vision = self.vit.encoder.layer[i](hidden_states_vision)[0]
+                hidden_states_vision = self.vit.layers[i](hidden_states_vision)
+                hidden_states_vision = self.vit.layernorm(hidden_states_vision)
+
+            hidden_states_bert = self.bert.encoder.layer[i](
+                hidden_states_bert,
+                attention_mask,
+                encoder_hidden_states,  # as a positional argument for gradient checkpointing
+                encoder_attention_mask=encoder_attention_mask,
+                past_key_values=past_key_values,
+                **kwargs,
+            )
+
+            # FUSE EMBEDDINGS
+            if i == self.fuse_place[0]-1 or i == self.fuse_place[1]-1 or i == self.fuse_place[2]-1:
+                # project to same space
+                #hidden_states_vision = self.vision_proj(hidden_states_vision)
+                #hidden_states_bert = self.text_proj(hidden_states_bert)
+                #print(hidden_states_vision.shape, hidden_states_bert.shape)
+
+                if self.cross_attn_fusion:
+                    #print(hidden_states_vision.shape, hidden_states_bert.shape)
+                    hidden_states_bert, hidden_states_vision = self.cross_attn_layers[j](hidden_states_bert, hidden_states_vision, None)
+                    #print(hidden_states_vision.shape, hidden_states_bert.shape)
+                #else:
+                # TODO: may need to flatten somehow
+                # project to same space replaces this
+                if self.vision_model == 'mobilenet':
+                    flat1 = self.conv_layers[j](hidden_states_vision).squeeze(-1).squeeze(-1)
+                    #flat1 = self.pool_layers[j](flat1).flatten(1)
+                    flat1 = self.lin(flat1)  # project to same space
+                elif self.vision_model == 'vit':
+                    flat1 = hidden_states_vision[:, 0, :]
+                    #flat1 = hidden_states_vision.pooler_output
+                flat2 = hidden_states_bert[:, 0, :]
+                #flat2 = hidden_states_bert.pooler_output#[:, 0, :]
+                #print(flat1.shape, flat2.shape)
+                x = torch.cat((flat1, flat2), dim=1)
+                #x = torch.cat((hidden_states_vision, hidden_states_bert), dim=1)
+                x = self.fusion_layers[j](x)
+                fused_outputs.append(x)
+                j = j + 1
+        x = torch.cat(fused_outputs, dim=1)
+        x = self.linear1(x)
+        x = self.relu1(x)
+        x = self.dropout1(x)
+        x = self.linear2(x)
+        x = self.relu2(x)
+        x = self.dropout2(x)
+        x = self.out(x)
+
+        return x
+
+    def forward_old_version(
         self,
         pixel_values=None,  # mobilenet val
         bool_masked_pos=None,
@@ -435,11 +653,20 @@ class MidFusion(torch.nn.Module):
 
             # fusion - mobilenet output + bert output
             if i == self.fuse_place[0]-1 or i == self.fuse_place[1]-1 or i == self.fuse_place[2]-1:
+                hidden_states_vision = self.vision_proj(hidden_states_vision)
+                hidden_states_bert = self.text_proj(hidden_states_bert)
+                #if self.cross_attn_fusion:
+                #    hidden_states_bert, hidden_states_vision = self.cross_attn(hidden_states_bert, hidden_states_vision, None)
+                
                 if self.vision_model == 'mobilenet':
-                    flat1 = self.conv_layers[j](hidden_states_vision).squeeze(-1).squeeze(-1)
+                    #flat1 = self.conv_layers[j](hidden_states_vision).squeeze(-1).squeeze(-1)
+                    flat1 = self.hidden_states_vision[:, 0, :]  # WARN: may not work
+                    #flat1 = hidden_states_vision.pooler_output
                 elif self.vision_model == 'vit':
                     flat1 = hidden_states_vision[:, 0, :]
+                    #flat1 = hidden_states_vision.pooler_output
                 flat2 = hidden_states_bert[:, 0, :]
+                #flat2 = hidden_states_bert.pooler_output#[:, 0, :]
 
                 concat = torch.cat((flat1, flat2), dim=1)
 
@@ -487,27 +714,34 @@ class EarlyFusion(torch.nn.Module):
     """
     Early fusion of vision model (MobileNetV2, ViT) and BERT.
     """
-    def __init__(self, vision_model, num_attn_net_blocks=4):
+    def __init__(self, vision_model, cross_attn_fusion, num_attn_net_blocks=4):
         super().__init__()
         self.N_CLASSES = 2
         self.vision_model = vision_model
+        self.cross_attn_fusion = cross_attn_fusion
         self.num_backbone_layers = 6
+        self.dim = 768
+
+        self.lin = torch.nn.LazyLinear(self.dim)  # TODO - clean
 
         cfg = BertConfig()
         self.bert = BertModel(cfg).from_pretrained('bert-base-uncased')
+        self.text_proj = torch.nn.Linear(self.bert.config.hidden_size, self.dim)
+
+        self.cross_attn = BiDirectionalCrossAttnBlock(self.dim)
 
         if vision_model == 'mobilenet':
             cfg = MobileNetV2Config()
             self.mobilenet_v2 = MobileNetV2Model(cfg).from_pretrained('google/mobilenet_v2_1.4_224')
             self.num_intermediate_layers = len(self.mobilenet_v2.layer)
             self.pool_layer = torch.nn.MaxPool2d(kernel_size=(14, 14), stride=1)
-            self.attn_net = AttentionNet(856, num_blocks=num_attn_net_blocks)
-            #self.linear1 = torch.nn.Linear(856, 512)
+            self.vision_proj = torch.nn.LazyLinear(self.dim)
+            #self.attn_net = AttentionNet(856, num_blocks=num_attn_net_blocks)
         elif vision_model == 'vit':
             cfg = ViTConfig()
             self.vit = ViTModel(cfg).from_pretrained('google/vit-base-patch16-224')
-            self.attn_net = AttentionNet(1536, num_blocks=num_attn_net_blocks)
-            #self.linear1 = torch.nn.Linear(1536, 512)
+            self.vision_proj = torch.nn.Linear(self.vit.config.hidden_size, self.dim)
+        self.attn_net = AttentionNet(1536, num_blocks=num_attn_net_blocks)
 
         # classification head
         self.linear1 = torch.nn.LazyLinear(512)
@@ -518,7 +752,128 @@ class EarlyFusion(torch.nn.Module):
         self.dropout2 = torch.nn.Dropout(0.3)
         self.out = torch.nn.Linear(256, self.N_CLASSES)
 
-    def forward(self, pixel_values=None, bool_masked_pos=None, interpolate_pos_encoding=None, labels=None, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, head_mask=None, inputs_embeds=None, encoder_hidden_states=None, encoder_attention_mask=None, past_key_values=None):
+    def get_vision_model_hidden_states(self, pixel_values, bool_masked_pos=None, interpolate_pos_encoding=None):
+        if self.vision_model == 'mobilenet':
+            hidden_states_vision = self.mobilenet_v2.conv_stem(pixel_values)
+        elif self.vision_model == 'vit':
+            vit_embedding_output = self.vit.embeddings(
+            pixel_values, bool_masked_pos=bool_masked_pos, interpolate_pos_encoding=interpolate_pos_encoding
+        )
+            hidden_states_vision = vit_embedding_output
+        return hidden_states_vision
+
+    def bert_embeddings_and_attention_mask(self, input_ids, position_ids, token_type_ids, inputs_embeds, past_key_values=None, attention_mask=None, encoder_hidden_states=None, encoder_attention_mask=None):
+        #self.bert.config.use_cache = False  # FIXME: disabling cache due to versioning differences
+        if self.bert.config.use_cache and past_key_values is None:
+            from transformers.cache_utils import DynamicCache, EncoderDecoderCache
+            past_key_values = (
+                    EncoderDecoderCache(DynamicCache(config=self.bert.config), DynamicCache(config=self.bert.config))
+                    if encoder_hidden_states is not None or self.bert.config.is_encoder_decoder
+                    else DynamicCache(config=self.bert.config)
+            )
+
+        past_key_values_length = past_key_values.get_seq_length() if past_key_values is not None else 0
+
+        embedding_output = self.bert.embeddings(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            token_type_ids=token_type_ids,
+            inputs_embeds=inputs_embeds,
+            past_key_values_length=past_key_values_length,
+        )
+
+        attention_mask, encoder_attention_mask = self.bert._create_attention_masks(
+            attention_mask=attention_mask,
+            encoder_attention_mask=encoder_attention_mask,
+            embedding_output=embedding_output,
+            encoder_hidden_states=encoder_hidden_states,
+            past_key_values=past_key_values,
+        )
+
+        return past_key_values, past_key_values_length, embedding_output, attention_mask, encoder_attention_mask
+
+    def forward(
+        self,
+        pixel_values=None,  # mobilenet val
+        bool_masked_pos=None,
+        interpolate_pos_encoding=None,
+        labels=None,  # mobilenet val
+        input_ids=None,  # bert val
+        attention_mask=None,  # bert val
+        token_type_ids=None,  # bert val
+        position_ids=None,
+        head_mask=None,
+        inputs_embeds=None,
+        encoder_hidden_states=None,
+        encoder_attention_mask=None,
+        past_key_values=None,
+        **kwargs
+    ):
+        # VISION MODEL - HIDDEN STATES
+        hidden_states_vision = self.get_vision_model_hidden_states(pixel_values, bool_masked_pos, interpolate_pos_encoding)
+
+        # BERT - HIDDEN STATES
+        past_key_values, past_key_values_length, hidden_states_bert, attention_mask, encoder_attention_mask = self.bert_embeddings_and_attention_mask(input_ids, position_ids, token_type_ids, inputs_embeds, past_key_values, attention_mask, encoder_hidden_states, encoder_attention_mask)
+
+        # JOINT ENCODER - RUN THROUGH ALL STANDARD LAYERS
+        for i in range(self.num_backbone_layers):
+            #print('LAYER', i)
+
+            # VISION ENCODER
+            if self.vision_model == 'mobilenet':
+                # mobilenet - layer modules (inverted residuals)
+                hidden_states_vision = self.mobilenet_v2.layer[i](hidden_states_vision)
+            elif self.vision_model == 'vit':
+                #hidden_states_vision = self.vit.encoder.layer[i](hidden_states_vision)[0]
+                hidden_states_vision = self.vit.layers[i](hidden_states_vision)
+                hidden_states_vision = self.vit.layernorm(hidden_states_vision)
+
+            # BERT ENCODER
+            hidden_states_bert = self.bert.encoder.layer[i](
+                hidden_states_bert,
+                attention_mask,
+                encoder_hidden_states,  # as a positional argument for gradient checkpointing
+                encoder_attention_mask=encoder_attention_mask,
+                past_key_values=past_key_values,
+                **kwargs,
+            )
+
+        # FUSE
+
+        # project to same space
+        #hidden_states_vision = self.vision_proj(hidden_states_vision)
+        #hidden_states_bert = self.text_proj(hidden_states_bert)
+
+        if self.cross_attn_fusion:
+            hidden_states_bert, hidden_states_vision = self.cross_attn(hidden_states_bert, hidden_states_vision)
+
+        if self.vision_model == 'mobilenet':
+            # early fusion - cnn with mobilenet output + bert output as input
+            flat1 = self.pool_layer(hidden_states_vision).squeeze(-1).squeeze(-1)
+            flat1 = self.lin(flat1)
+            #hidden_states_vision = self.pool_layer(hidden_states_vision).pooler_output
+        elif self.vision_model == 'vit':
+            flat1 = hidden_states_vision[:, 0, :]
+            #hidden_states_vision = hidden_states_vision.pooler_output
+        flat2 = hidden_states_bert[:, 0, :]
+        #hidden_states_bert = hidden_states_bert.pooler_output
+
+        concat = torch.cat((flat1, flat2), dim=1)
+
+        x = self.attn_net(concat)
+
+        # classification head
+        x = self.linear1(x)
+        x = self.relu1(x)
+        x = self.dropout1(x)
+        x = self.linear2(x)
+        x = self.relu2(x)
+        x = self.dropout2(x)
+        x = self.out(x)
+
+        return x
+
+    def forward_old_version(self, pixel_values=None, bool_masked_pos=None, interpolate_pos_encoding=None, labels=None, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, head_mask=None, inputs_embeds=None, encoder_hidden_states=None, encoder_attention_mask=None, past_key_values=None):
         if pixel_values is None:
             raise ValueError("You have to specify pixel_values")
 
@@ -644,6 +999,9 @@ class EarlyFusion(torch.nn.Module):
 
         for i in range(self.num_backbone_layers):
             #print('LAYER', i)
+            hidden_states_vision = self.vision_proj(hidden_states_vision)
+            hidden_states_bert = self.text_proj(hidden_states_bert)
+
             if self.vision_model == 'mobilenet':
                 # mobilenet - layer modules (inverted residuals)
                 hidden_states_vision = self.mobilenet_v2.layer[i](hidden_states_vision)
@@ -665,12 +1023,19 @@ class EarlyFusion(torch.nn.Module):
             hidden_states_bert = layer_outputs[0]
             if use_cache:
                 next_decoder_cache += (layer_outputs[-1],)
+
+        self.cross_attn(hidden_states_bert, hidden_states_vision)
+
         if self.vision_model == 'mobilenet':
             # early fusion - cnn with mobilenet output + bert output as input
-            flat1 = self.pool_layer(hidden_states_vision).squeeze(-1).squeeze(-1)
+            #flat1 = self.pool_layer(hidden_states_vision).squeeze(-1).squeeze(-1)
+            hidden_states_vision = self.pool_layer(hidden_states_vision).pooler_output
         elif self.vision_model == 'vit':
-            flat1 = hidden_states_vision[:, 0, :]
-        flat2 = hidden_states_bert[:, 0, :]
+            #flat1 = hidden_states_vision[:, 0, :]
+            hidden_states_vision = hidden_states_vision.pooler_output
+        #flat2 = hidden_states_bert[:, 0, :]
+        hidden_states_bert = hidden_states_bert.pooler_output
+
         concat = torch.cat((flat1, flat2), dim=1)
 
         x = self.attn_net(concat)

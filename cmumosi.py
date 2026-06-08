@@ -6,7 +6,7 @@ import pandas as pd
 from PIL import Image
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
-from transformers import BertTokenizer
+from transformers import AutoTokenizer
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset, DataLoader, random_split
 
@@ -17,7 +17,7 @@ class MultimodalDataset(torch.utils.data.Dataset):
         self.texts = texts
         self.labels = labels
 
-        self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', local_files_only=False)
+        self.tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
 
         self.transform = self._transform
         self.text_transform = self._text_transform
@@ -62,9 +62,8 @@ class MultimodalDataset(torch.utils.data.Dataset):
         text = str(text)
         text = " ".join(text.split())  # clean whitespace
 
-        inputs = self.tokenizer.encode_plus(
+        inputs = self.tokenizer(
             text,
-            None,
             add_special_tokens=True,
             truncation=True,
             padding='max_length',
