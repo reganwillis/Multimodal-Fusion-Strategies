@@ -7,6 +7,7 @@ kagglehub
 kagglesdk<0.1.24
 matplotlib
 scikit-learn
+ultralytics
 #onnx
 #onnxscript
 #onnxruntime

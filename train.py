@@ -6,7 +6,7 @@ import random
 import argparse
 import numpy as np
 from pathlib import Path
-from cmumosi import load_dataset
+from cmumosi import load_dataset, display_dataset_examples
 
 def seed(seed=222):
     random.seed(seed)
@@ -26,6 +26,7 @@ if __name__ == "__main__":
     parser.add_argument('--arch', type=str, required=True)
     parser.add_argument('--vision-model', type=str, required=False)
     parser.add_argument('--cross-attn-fusion', action="store_true")
+    parser.add_argument('--attn-fusion', action='store_true')
     parser.add_argument('--debug', action="store_true")
     args = parser.parse_args()
 
@@ -58,7 +59,7 @@ if __name__ == "__main__":
         arch = arch + args.vision_model
     elif arch == 'midfusion':
         from models import MidFusion
-        model = MidFusion(args.vision_model, args.cross_attn_fusion)
+        model = MidFusion(args.vision_model, args.cross_attn_fusion, args.attn_fusion)
         arch = arch + args.vision_model
     elif arch == 'earlyfusion':
         from models import EarlyFusion
@@ -78,6 +79,16 @@ if __name__ == "__main__":
 
     if DEBUG:
         n_epochs = 1
+
+        # display data
+        display_dataset_examples(train_dataloader)
+
+        # display data (no face crop)
+        """
+        dataloaders = load_dataset(batch_size=BATCH_SIZE, n_workers=N_WORKERS, finetune=False, face_crop=False)
+        train_dataloader, _, _ = dataloaders
+        display_dataset_examples(train_dataloader)
+        """
 
     # train
     optimizer = torch.optim.SGD(model.parameters(), lr=0.0001, momentum=0.9, weight_decay=0.0001)
