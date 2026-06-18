@@ -71,7 +71,9 @@ def preprocess_face_cropping(df, raw_frames_dir, out_dir, recrop=True):
 
 class MultimodalDataset(torch.utils.data.Dataset):
     def __init__(self, images, texts, labels, val=False):
+        print('Initializing dataset..')
         self.images = images
+        print(f'{len(images)} frames per label')
         self.texts = texts
         self.labels = labels
 
@@ -95,26 +97,29 @@ class MultimodalDataset(torch.utils.data.Dataset):
 
         return image, text, label
 
-    def _transform(self, image):
-        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        resized_img = cv2.resize(rgb_image, (224, 224), interpolation=cv2.INTER_LINEAR)
-        pil_image = Image.fromarray(resized_img)
+    def _transform(self, images):
+        ret = []
 
-        if not self.val:
-            flip = transforms.RandomHorizontalFlip(p=0.5)
-            pil_image = flip(pil_image)
-            crop = transforms.RandomResizedCrop(size=pil_image.size, scale=(0.08, 1.0), ratio=(0.75, 1.33))
-            pil_image = crop(pil_image)
-            affine = transforms.RandomAffine(degrees=0, scale=(0.8, 1.2))
-            pil_image = affine(pil_image)
-            color = transforms.ColorJitter(brightness=(0.5, 1.5), saturation=0.2, hue=0.1)
-            pil_image = color(pil_image)
+        for image in images:
+            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            resized_img = cv2.resize(rgb_image, (224, 224), interpolation=cv2.INTER_LINEAR)
+            pil_image = Image.fromarray(resized_img)
 
-        image = transforms.functional.pil_to_tensor(pil_image)
-        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.299, 0.224, 0.225])
-        image = normalize(image/255.0)
+            if not self.val:
+                flip = transforms.RandomHorizontalFlip(p=0.5)
+                pil_image = flip(pil_image)
+                crop = transforms.RandomResizedCrop(size=pil_image.size, scale=(0.08, 1.0), ratio=(0.75, 1.33))
+                pil_image = crop(pil_image)
+                affine = transforms.RandomAffine(degrees=0, scale=(0.8, 1.2))
+                pil_image = affine(pil_image)
+                color = transforms.ColorJitter(brightness=(0.5, 1.5), saturation=0.2, hue=0.1)
+                pil_image = color(pil_image)
 
-        return image
+            image = transforms.functional.pil_to_tensor(pil_image)
+            normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.299, 0.224, 0.225])
+            image = normalize(image/255.0)
+            ret.append(image)
+        return ret
 
     def _text_transform(self, text):
         text = str(text)
@@ -151,14 +156,36 @@ class MultimodalDataset(torch.utils.data.Dataset):
         return reduced_target
 
 
-def load_dataset(batch_size, n_workers, finetune=False, face_crop=True, recrop=False):
+def split_frames_from_video(file_path, clip_id, n_frames):
+    save_path = file_path.split('.')[0] + '/clip_id'
+    if os.path.exists(save_path):
+        print('Frames already extracted. Using existing split..')
+        # TODO: if n_frames different than number of frames in a folder, rerrun func
+        return save_path
+    os.makedirs(save_path, exist_ok=True)
+    cap = cv2.VideoCapture(file_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    if total_frames < n_frames:
+        print('WARN: total frames less than requested frames, returning all..')
+        n_frames = total_frames
+    frame_idxs = np.linspace(0, total_frames-1, n_frames, dtype=int)
+
+    for i, frame_idx in enumerate(frame_idxs):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
+        _, frame = cap.read()
+        cv2.imwrite(save_path + f'/{i}.jpg')
+    cap.release()
+
+    return save_path
+
+
+def load_dataset(batch_size, n_workers, finetune=False, face_crop=True, recrop=False, n_frames=1):
     os.environ['KAGGLEHUB_CACHE'] = './'
     path = kagglehub.dataset_download('a61979992/cmu-mosi')
     print('Loading dataset:', path)
-    csv_path = './datasets/a61979992/cmu-mosi/versions/1/label.csv'
+    df = pd.read_csv('./datasets/a61979992/cmu-mosi/versions/1/label.csv')
     file_path = f'./datasets/a61979992/cmu-mosi/versions/1/Raw_peak_frames/Raw_peak_frames/'
-
-    df = pd.read_csv(csv_path)
 
     if face_crop:
         print('Face crop enabled.')
@@ -190,18 +217,28 @@ def load_dataset(batch_size, n_workers, finetune=False, face_crop=True, recrop=F
             file_path = cropped_df.loc[i, "crop_path"]
         else:
             file_path = file_path + '{str(video_ids[i])}/{str(clip_ids[i])}.jpg'
-        frame = cv2.imread(file_path)
+
+        # TODO: support face_crop=True AND n_frames>1 at the same time
+        if n_frames == 1 or face_crop:
+            frames = [cv2.imread(file_path)]
+        else:
+            # pull multiple frames from video
+            file_path = file_path + '{str(video_ids[i])}/{str(clip_ids[i])}.mp4'
+            frames_path = split_frames_from_video(file_path, str(clip_ids[i]), n_frames)
+            frames = []
+            for f in os.listdir(frames_path):
+                frames.append(cv2.imread(f))
 
         if mode[i] == 'train':
-            train_images.append(frame)
+            train_images.append(frames)
             train_texts.append(texts[i])
             train_labels.append(labels[i])
         elif mode[i] == 'valid':
-            valid_images.append(frame)
+            valid_images.append(frames)
             valid_texts.append(texts[i])
             valid_labels.append(labels[i])
         elif mode[i] == 'test':
-            test_images.append(frame)
+            test_images.append(frames)
             test_texts.append(texts[i])
             test_labels.append(labels[i])
         else:
