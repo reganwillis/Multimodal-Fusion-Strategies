@@ -190,7 +190,7 @@ class BiDirectionalCrossAttnBlock(torch.nn.Module):
 
 class LateFusion(torch.nn.Module):
 
-    def __init__(self, vision_model, cross_attn_fusion):
+    def __init__(self, vision_model, cross_attn_fusion, freeze=False, fer_weights=None, bert_weights=None):
         super().__init__()
         self.N_CLASSES = 2
         self.vision_model = vision_model
@@ -204,6 +204,18 @@ class LateFusion(torch.nn.Module):
             self.fer = ViTForFacialExpressionRecognition(cfg, True)
         cfg = BertConfig()
         self.bert = BERTForSentimentAnalysis(cfg, True)
+
+        if freeze:
+            self.fer.load_state_dict(torch.load(fer_weights))
+            self.fer.multimodal = True
+            self.fer.eval()
+            for name, param in self.fer.named_parameters():
+                param.requires_grad = False
+            self.bert.load_state_dict(torch.load(bert_weights))
+            self.bert.multimodal = True
+            self.bert.eval()
+            for name, param in self.bert.named_parameters():
+                param.requires_grad = False
 
         self.dim = 768
         self.text_proj = torch.nn.Linear(self.bert.config.hidden_size, self.dim)

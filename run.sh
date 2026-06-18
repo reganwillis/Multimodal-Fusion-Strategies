@@ -5,8 +5,7 @@ DEBUG=
 CROSS_ATTN_FUSION= 
 #--cross-attn-fusion
 # use attention fusion layers for mid fusion
-ATTN_FUSION= 
-#--attn-fusion
+ATTN_FUSION=--attn-fusion
 
 # install dependencies
 # TODO: only create new venv if this dir does not exist
@@ -85,4 +84,23 @@ CUDA_VISIBLE_DEVICES=1 CUBLAS_WORKSPACE_CONFIG=:4096:8 python3 train.py \
 	--vision-model None \
 	$DEBUG > out.log
 mv out.log earlyfusionNone_out
+exit
+
+# freezing weights for late fusion
+CUDA_VISIBLE_DEVICES=1 CUBLAS_WORKSPACE_CONFIG=:4096:8 python3 train.py \
+	--arch 'latefusion' \
+	--vision-model 'mobilenet' \
+	--freeze --path-mobilenet trial2/mobilenet_out/model_state_dict.pt \
+	--path-bert trial2/bert_out/model_state_dict.pt \
+	$CROSS_ATTN_FUSION \
+	$DEBUG > out.log
+mv out.log latefusionmobilenet_out
+CUDA_VISIBLE_DEVICES=1 CUBLAS_WORKSPACE_CONFIG=:4096:8 python3 train.py \
+	--arch 'latefusion' \
+	--vision-model 'vit' \
+	--freeze --path-vit trial2/vit_out/model_state_dict.pt \
+	--path-bert trial2/bert_out/model_state_dict.pt \
+	$CROSS_ATTN_FUSION \
+	$DEBUG > out.log
+mv out.log latefusionvit_out
 exit

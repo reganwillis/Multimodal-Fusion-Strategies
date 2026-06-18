@@ -27,6 +27,10 @@ if __name__ == "__main__":
     parser.add_argument('--vision-model', type=str, required=False)
     parser.add_argument('--cross-attn-fusion', action="store_true")
     parser.add_argument('--attn-fusion', action='store_true')
+    parser.add_argument('--freeze', action='store_true')
+    parser.add_argument('--path-mobilenet', type=str, required=False)
+    parser.add_argument('--path-vit', type=str, required=False)
+    parser.add_argument('--path-bert', type=str, required=False)
     parser.add_argument('--debug', action="store_true")
     args = parser.parse_args()
 
@@ -55,7 +59,13 @@ if __name__ == "__main__":
         model = BERTForSentimentAnalysis(cfg)
     elif arch == 'latefusion':
         from models import LateFusion
-        model = LateFusion(args.vision_model, args.cross_attn_fusion)
+        if args.freeze:
+            if args.vision_model == 'mobilenet':
+                model = LateFusion(args.vision_model, args.cross_attn_fusion, args.freeze, args.path_mobilenet, args.path_bert)
+            elif args.vision_model == 'vit':
+                model = LateFusion(args.vision_model, args.cross_attn_fusion, args.freeze, args.path_vit, args.path_bert)
+        else:
+            model = LateFusion(args.vision_model, args.cross_attn_fusion)
         arch = arch + args.vision_model
     elif arch == 'midfusion':
         from models import MidFusion
