@@ -83,7 +83,7 @@ if __name__ == "__main__":
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(DEVICE)
 
-    dataloaders = load_dataset(batch_size=BATCH_SIZE, n_workers=N_WORKERS, finetune=False)
+    dataloaders = load_dataset(batch_size=BATCH_SIZE, n_workers=N_WORKERS, face_crop=False)
     train_dataloader, val_dataloader, test_dataloader = dataloaders
     n_epochs = 100
 

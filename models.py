@@ -14,6 +14,8 @@ from transformers.models.vit.configuration_vit import ViTConfig
 
 from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions
 
+BERT_PRETRAINED_PATH = 'bert-large-uncased' 
+
 
 class MobileNetV2ForFacialExpressionRecognition(MobileNetV2PreTrainedModel):
     """
@@ -104,7 +106,7 @@ class BERTForSentimentAnalysis(BertModel):
         self.N_CLASSES = 2
         self.config = config
 
-        self.bert = BertModel(config).from_pretrained('bert-base-uncased')
+        self.bert = BertModel(config).from_pretrained(BERT_PRETRAINED_PATH)
         self.dropout = torch.nn.Dropout(0.3)
         self.classifier = torch.nn.Linear(config.hidden_size, self.N_CLASSES)
 
@@ -218,7 +220,7 @@ class LateFusion(torch.nn.Module):
                 param.requires_grad = False
 
         self.dim = 768
-        self.text_proj = torch.nn.Linear(self.bert.config.hidden_size, self.dim)
+        self.text_proj = torch.nn.Linear(self.bert.config.hidden_size, self.bert.config.intermediate_size)
         self.vision_proj = torch.nn.LazyLinear(self.dim)
         if self.cross_attn_fusion:
             print('Initializing Cross Attention Block..')
@@ -300,7 +302,7 @@ class MidFusion(torch.nn.Module):
         self.fusion_layers = torch.nn.ModuleList()
 
         cfg = BertConfig()
-        self.bert = BertModel(cfg).from_pretrained('bert-base-uncased')
+        self.bert = BertModel(cfg).from_pretrained(BERT_PRETRAINED_PATH)
 
         if vision_model == 'mobilenet':
             cfg = MobileNetV2Config()
@@ -511,7 +513,7 @@ class EarlyFusion(torch.nn.Module):
         self.dim = 768
 
         cfg = BertConfig()
-        self.bert = BertModel(cfg).from_pretrained('bert-base-uncased')
+        self.bert = BertModel(cfg).from_pretrained(BERT_PRETRAINED_PATH)
 
         self.cross_attn = BiDirectionalCrossAttnBlock(self.dim)
 

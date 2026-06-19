@@ -75,7 +75,7 @@ class MultimodalDataset(torch.utils.data.Dataset):
         self.texts = texts
         self.labels = labels
 
-        self.tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
+        self.tokenizer = AutoTokenizer.from_pretrained('bert-large-uncased')
 
         self.transform = self._transform
         self.text_transform = self._text_transform
@@ -187,10 +187,10 @@ def load_dataset(batch_size, n_workers, finetune=False, face_crop=True, recrop=F
     test_labels = []
     for i in range(len(labels)):
         if face_crop:
-            file_path = cropped_df.loc[i, "crop_path"]
+            frame_path = cropped_df.loc[i, "crop_path"]
         else:
-            file_path = file_path + '{str(video_ids[i])}/{str(clip_ids[i])}.jpg'
-        frame = cv2.imread(file_path)
+            frame_path = file_path + f'{str(video_ids[i])}/{str(clip_ids[i])}.jpg'
+        frame = cv2.imread(frame_path)
 
         if mode[i] == 'train':
             train_images.append(frame)
