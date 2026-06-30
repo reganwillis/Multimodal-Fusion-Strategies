@@ -1,4 +1,5 @@
 import os
+import time
 import torch
 import numpy as np
 from pathlib import Path
@@ -226,6 +227,40 @@ def evaluate(model, arch, dataloader, device, total_steps, loss_fn, compute_accu
     )
 
     return running_loss, running_acc
+
+
+def evaluate_latency(model, arch, dataloader, device, trials, warmup):
+    model.eval()
+    total_inf_time = 0.0
+
+    with torch.no_grad():
+        #for i in range(trials+warm_up):
+        for i, (images, texts, targets) in enumerate(dataloader):
+            start_time = time.time()
+
+            images = images.to(device)
+            targets = targets.to(device)
+
+            ids = texts['ids'].to(device, dtype=torch.long)
+            mask = texts['mask'].to(device, dtype=torch.long)
+            token_type_ids = texts['token_type_ids'].to(device, dtype=torch.long)
+
+            if arch == 'mobilenet' or arch == 'vit':
+                outputs = model(images)
+            elif arch == 'bert':
+                outputs = model(ids, mask, token_type_ids)
+            elif 'fusion' in arch:
+                outputs = model(images, input_ids=ids, attention_mask=mask, token_type_ids=token_type_ids)
+
+            if i >= warmup:
+                total_inf_time += time.time()-start_time
+
+            if i == trials:
+                break
+    avg_inf_time = total_inf_time/trials
+    print(f'{arch}\t | {avg_inf_time} s')
+
+    return avg_inf_time
 
 
 def score(all_preds, all_targets):
