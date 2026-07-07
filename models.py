@@ -146,6 +146,21 @@ class BiDirectionalCrossAttnBlock(torch.nn.Module):
         self.text_norm1 = torch.nn.LayerNorm(hidden_dim)
         self.vision_norm1 = torch.nn.LayerNorm(hidden_dim)
 
+        # fixing early fusion loading bug, not used
+        self.text_norm2 = torch.nn.LayerNorm(hidden_dim)
+        self.text_ffn = torch.nn.Sequential(
+                torch.nn.Linear(hidden_dim, hidden_dim * 4),
+                torch.nn.ReLU(),
+                torch.nn.Linear(hidden_dim * 4, hidden_dim)
+        )
+        self.vision_norm2 = torch.nn.LayerNorm(hidden_dim)
+        self.vision_ffn = torch.nn.Sequential(
+                torch.nn.Linear(hidden_dim, hidden_dim * 4),
+                torch.nn.ReLU(),
+                torch.nn.Linear(hidden_dim * 4, hidden_dim)
+        )
+        
+
     def forward(self, text_tokens, vision_tokens):
         vision_tokens = vision_tokens.unsqueeze(1)
 

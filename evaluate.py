@@ -4,7 +4,6 @@ import csv
 import time
 import torch
 import random
-import optuna
 import argparse
 import numpy as np
 from pathlib import Path
@@ -90,7 +89,7 @@ if __name__ == "__main__":
     train_dataloader, val_dataloader, test_dataloader = dataloaders
 
     print('Loading model weights for evalution..')
-    model.load_state_dict(torch.load(args.weights, weights_only=False))
+    model.load_state_dict(torch.load(args.weights, weights_only=False, map_location=DEVICE))
     model.to(DEVICE)
     #model_onnx = rt.InferenceSession(args.weights, providers=providers)
     print('Evaluating model..')
