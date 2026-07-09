@@ -14,9 +14,6 @@ from transformers.models.vit.configuration_vit import ViTConfig
 
 from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions
 
-BERT_PRETRAINED_PATH = 'bert-large-uncased' 
-BERT_PRETRAINED_PATH = 'bert-base-uncased' 
-
 
 class MobileNetV2ForFacialExpressionRecognition(MobileNetV2PreTrainedModel):
     """
@@ -101,14 +98,14 @@ class BERTForSentimentAnalysis(BertModel):
     """
     from Bert For Sequence Classification
     """
-    def __init__(self, multimodal=False, cross_attn=False):
-        self.config = BertConfig.from_pretrained(BERT_PRETRAINED_PATH)
+    def __init__(self, pretrained, multimodal=False, cross_attn=False):
+        self.config = BertConfig.from_pretrained(pretrained)
         super().__init__(config=self.config)
         self.multimodal = multimodal
         self.cross_attn = cross_attn
         self.N_CLASSES = 2
 
-        self.bert = BertModel(self.config).from_pretrained(BERT_PRETRAINED_PATH)
+        self.bert = BertModel(self.config).from_pretrained(pretrained)
         self.dropout = torch.nn.Dropout(0.3)
         self.classifier = torch.nn.Linear(self.config.hidden_size, self.N_CLASSES)
 
@@ -146,20 +143,6 @@ class BiDirectionalCrossAttnBlock(torch.nn.Module):
         self.text_norm1 = torch.nn.LayerNorm(hidden_dim)
         self.vision_norm1 = torch.nn.LayerNorm(hidden_dim)
 
-        # fixing early fusion loading bug, not used
-        self.text_norm2 = torch.nn.LayerNorm(hidden_dim)
-        self.text_ffn = torch.nn.Sequential(
-                torch.nn.Linear(hidden_dim, hidden_dim * 4),
-                torch.nn.ReLU(),
-                torch.nn.Linear(hidden_dim * 4, hidden_dim)
-        )
-        self.vision_norm2 = torch.nn.LayerNorm(hidden_dim)
-        self.vision_ffn = torch.nn.Sequential(
-                torch.nn.Linear(hidden_dim, hidden_dim * 4),
-                torch.nn.ReLU(),
-                torch.nn.Linear(hidden_dim * 4, hidden_dim)
-        )
-        
 
     def forward(self, text_tokens, vision_tokens):
         vision_tokens = vision_tokens.unsqueeze(1)
@@ -185,7 +168,7 @@ class BiDirectionalCrossAttnBlock(torch.nn.Module):
 
 class LateFusion(torch.nn.Module):
 
-    def __init__(self, vision_model, cross_attn_fusion, freeze=False, fer_weights=None, bert_weights=None):
+    def __init__(self, vision_model, bert_model, cross_attn_fusion, freeze=False, fer_weights=None, bert_weights=None):
         super().__init__()
         self.N_CLASSES = 2
         self.vision_model = vision_model
@@ -197,7 +180,7 @@ class LateFusion(torch.nn.Module):
         elif vision_model == 'vit':
             cfg = ViTConfig()
             self.fer = ViTForFacialExpressionRecognition(cfg, True)
-        self.bert = BERTForSentimentAnalysis(True, cross_attn_fusion)
+        self.bert = BERTForSentimentAnalysis(bert_model, True, cross_attn_fusion)
         self.dim = self.bert.config.hidden_size
 
         if freeze:
@@ -212,7 +195,7 @@ class LateFusion(torch.nn.Module):
             for name, param in self.bert.named_parameters():
                 param.requires_grad = False
 
-        self.text_proj = torch.nn.LazyLinear(self.dim)
+        self.text_proj = torch.nn.Linear(self.bert.config.hidden_size, self.dim)
         self.vision_proj = torch.nn.LazyLinear(self.dim)
         if self.cross_attn_fusion:
             print('Initializing Cross Attention Block..')
@@ -288,7 +271,7 @@ class MidFusion(torch.nn.Module):
     """
     Intermediate fusion of a vision model and BERT.
     """
-    def __init__(self, vision_model, cross_attn_fusion, attn_fusion=False, fuse_place=[8,6,4,4]):
+    def __init__(self, vision_model, bert_model, cross_attn_fusion, attn_fusion=False, fuse_place=[8,6,4,4]):
         super().__init__()
         self.N_CLASSES = 2
         self.vision_model = vision_model
@@ -298,10 +281,9 @@ class MidFusion(torch.nn.Module):
         self.TRUNCATE_IDX = self.fuse_place[3]
         self.fusion_layers = torch.nn.ModuleList()
 
-        cfg = BertConfig.from_pretrained(BERT_PRETRAINED_PATH)
-        self.bert = BertModel.from_pretrained(BERT_PRETRAINED_PATH, config=cfg)
+        cfg = BertConfig.from_pretrained(bert_model)
+        self.bert = BertModel.from_pretrained(bert_model, config=cfg)
         self.dim = self.bert.config.hidden_size
-        self.fusion_dim = 1536
 
         if vision_model == 'mobilenet':
             cfg = MobileNetV2Config()
@@ -331,9 +313,16 @@ class MidFusion(torch.nn.Module):
                 torch.nn.MaxPool2d(kernel_size=(14, 14), stride=1)
             ))
             self.vision_proj = torch.nn.LazyLinear(self.dim)
+            self.vision_dim = self.bert.config.hidden_size
         elif vision_model == 'vit':
             cfg = ViTConfig()
             self.vit = ViTModel(cfg).from_pretrained('google/vit-base-patch16-224')
+            self.vision_dim = self.vit.config.hidden_size
+            #self.vision_dim = self.bert.config.hidden_size
+            #self.vision_proj = torch.nn.LazyLinear(self.dim)
+        self.fusion_dim = self.dim + self.vision_dim
+        if cross_attn_fusion:
+            self.fusion_dim = self.dim
 
         if self.cross_attn_fusion:
             print('Initializing Cross Attention Block..')
@@ -347,10 +336,9 @@ class MidFusion(torch.nn.Module):
             self.fusion_layers.append(AttentionFusion(self.fusion_dim))
         else:
             # standard
-            # NOTE: may need fusion_dim instead of dim
-            self.fusion_layers.append(LinearFusion(self.dim))  # 3
-            self.fusion_layers.append(LinearFusion(self.dim))  # 6
-            self.fusion_layers.append(LinearFusion(self.dim))  # 7
+            self.fusion_layers.append(LinearFusion(self.fusion_dim))  # 3
+            self.fusion_layers.append(LinearFusion(self.fusion_dim))  # 6
+            self.fusion_layers.append(LinearFusion(self.fusion_dim))  # 7
 
         # classification head
         self.linear1 = torch.nn.LazyLinear(512)
@@ -440,7 +428,7 @@ class MidFusion(torch.nn.Module):
                     hidden_states_vision = self.mobilenet_v2.layer[i](hidden_states_vision)
                 elif self.vision_model == 'vit':
                     hidden_states_vision = self.vit.layers[i](hidden_states_vision)
-                    hidden_states_vision = self.vit.layernorm(hidden_states_vision)
+                    #hidden_states_vision = self.vit.layernorm(hidden_states_vision)
 
             hidden_states_bert = self.bert.encoder.layer[i](
                 hidden_states_bert,
@@ -453,17 +441,21 @@ class MidFusion(torch.nn.Module):
 
             # FUSE EMBEDDINGS
             if i == self.fuse_place[0]-1 or i == self.fuse_place[1]-1 or i == self.fuse_place[2]-1:
+                #print('FUSING')
+
                 if self.vision_model != 'None':
                     if self.vision_model == 'mobilenet':
                         hs_vision = self.conv_layers[j](hidden_states_vision).squeeze(-1).squeeze(-1)
                         hs_vision = self.vision_proj(hs_vision)
                     elif self.vision_model == 'vit':
                         hs_vision = hidden_states_vision[:, 0, :]
+                        #hs_vision = self.vision_proj(hs_vision)
 
                 if self.cross_attn_fusion:
                     hs_bert, hs_vision = self.cross_attn_layers[j](hidden_states_bert, hs_vision)
                 else:
                     hs_bert = hidden_states_bert[:, 0, :]
+
                 if self.vision_model != 'None':
                     x = torch.cat((hs_vision, hs_bert), dim=1)
 
@@ -516,17 +508,16 @@ class EarlyFusion(torch.nn.Module):
     """
     Early fusion of vision model (MobileNetV2, ViT) and BERT.
     """
-    def __init__(self, vision_model, cross_attn_fusion, num_attn_net_blocks=4):
+    def __init__(self, vision_model, bert_model, cross_attn_fusion, num_attn_net_blocks=4):
         super().__init__()
         self.N_CLASSES = 2
         self.vision_model = vision_model
         self.cross_attn_fusion = cross_attn_fusion
         self.num_backbone_layers = 6
 
-        cfg = BertConfig.from_pretrained(BERT_PRETRAINED_PATH)
-        self.bert = BertModel.from_pretrained(BERT_PRETRAINED_PATH, config=cfg)
+        cfg = BertConfig.from_pretrained(bert_model)
+        self.bert = BertModel.from_pretrained(bert_model, config=cfg)
         self.dim = self.bert.config.hidden_size
-        self.fusion_dim = 1536
 
         self.cross_attn = BiDirectionalCrossAttnBlock(self.dim)
 
@@ -536,9 +527,17 @@ class EarlyFusion(torch.nn.Module):
             self.num_intermediate_layers = len(self.mobilenet_v2.layer)
             self.pool_layer = torch.nn.MaxPool2d(kernel_size=(14, 14), stride=1)
             self.vision_proj = torch.nn.LazyLinear(self.dim)
+            self.vision_dim = self.bert.config.hidden_size
         elif vision_model == 'vit':
             cfg = ViTConfig()
             self.vit = ViTModel(cfg).from_pretrained('google/vit-base-patch16-224')
+            self.vision_dim = self.vit.config.hidden_size
+            #self.vision_dim = self.bert.config.hidden_size
+            #self.vision_proj = torch.nn.LazyLinear(self.dim)
+
+        self.fusion_dim = self.dim + self.vision_dim
+        if cross_attn_fusion:
+            self.fusion_dim = self.dim
 
         if vision_model != 'None':
             self.attn_net = AttentionNet(self.fusion_dim, num_blocks=num_attn_net_blocks)
@@ -628,7 +627,7 @@ class EarlyFusion(torch.nn.Module):
                     hidden_states_vision = self.mobilenet_v2.layer[i](hidden_states_vision)
                 elif self.vision_model == 'vit':
                     hidden_states_vision = self.vit.layers[i](hidden_states_vision)
-                    hidden_states_vision = self.vit.layernorm(hidden_states_vision)
+                    #hidden_states_vision = self.vit.layernorm(hidden_states_vision)
 
             # BERT ENCODER
             hidden_states_bert = self.bert.encoder.layer[i](
@@ -648,6 +647,8 @@ class EarlyFusion(torch.nn.Module):
                 hidden_states_vision = self.vision_proj(hidden_states_vision)
             elif self.vision_model == 'vit':
                 hidden_states_vision = hidden_states_vision[:, 0, :]
+                #hidden_states_vision = self.vision_proj(hidden_states_vision)
+
         if self.cross_attn_fusion:
             hidden_states_bert, hidden_states_vision = self.cross_attn(hidden_states_bert, hidden_states_vision)
         else:
