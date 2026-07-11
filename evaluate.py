@@ -29,6 +29,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--arch', type=str, required=True)
     parser.add_argument('--vision-model', type=str, required=False)
+    parser.add_argument('--bert-model', type=str, required=False)
     parser.add_argument('--cross-attn-fusion', action='store_true')
     parser.add_argument('--attn-fusion', action='store_true')
     parser.add_argument('--debug', action='store_true')
@@ -64,18 +65,22 @@ if __name__ == "__main__":
         model = ViTForFacialExpressionRecognition(cfg)
     elif arch == 'bert':
         from models import BERTForSentimentAnalysis
-        model = BERTForSentimentAnalysis()
+        model = BERTForSentimentAnalysis(args.bert_model)
     elif arch == 'latefusion':
         from models import LateFusion
-        model = LateFusion(args.vision_model, args.cross_attn_fusion)
+        model = LateFusion(args.vision_model, args.bert_model, args.cross_attn_fusion)
         arch = arch + args.vision_model
     elif arch == 'midfusion':
         from models import MidFusion
-        model = MidFusion(args.vision_model, args.cross_attn_fusion, args.attn_fusion)
+        model = MidFusion(args.vision_model, args.bert_model, args.cross_attn_fusion, args.attn_fusion)
         arch = arch + args.vision_model
     elif arch == 'earlyfusion':
         from models import EarlyFusion
-        model = EarlyFusion(args.vision_model, args.cross_attn_fusion)
+        model = EarlyFusion(args.vision_model, args.bert_model, args.cross_attn_fusion)
+        arch = arch + args.vision_model
+    elif arch == 'veryearlyfusion':
+        from models import EarlyFusion
+        model = EarlyFusion(args.vision_model, args.bert_model, args.cross_attn_fusion, num_backbone_layers=3)
         arch = arch + args.vision_model
     else:
         raise ValueError(f'Invalid model architecture {arch}')
@@ -88,9 +93,27 @@ if __name__ == "__main__":
     dataloaders = load_dataset(batch_size=BATCH_SIZE, n_workers=N_WORKERS, face_crop=False)
     train_dataloader, val_dataloader, test_dataloader = dataloaders
 
+
+    save_path = arch
+    if args.bert_model == 'bert-large-uncased':
+        save_path = save_path + '_bertlarge'
+    if args.cross_attn_fusion:
+        save_path = save_path + '_xattn'
+    save_path_str = save_path + '_perf'
+
     print('Loading model weights for evalution..')
     model.load_state_dict(torch.load(args.weights, weights_only=False, map_location=DEVICE))
     model.to(DEVICE)
     #model_onnx = rt.InferenceSession(args.weights, providers=providers)
     print('Evaluating model..')
     latency = lib.evaluate_latency(model, arch, test_dataloader, DEVICE, n_trials, warmup)
+
+    # save metrics to CSV
+    path = save_path_str+'.csv'
+    header = ["Architecture", "Test Latency"]
+
+    with open(path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerow([save_path_str, latency])
+    print('Done.')

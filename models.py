@@ -24,7 +24,7 @@ class MobileNetV2ForFacialExpressionRecognition(MobileNetV2PreTrainedModel):
         self.multimodal = multimodal
 
         self.N_CLASSES = 2
-        self.mobilenet_v2 = MobileNetV2Model(config).from_pretrained('google/mobilenet_v2_1.4_224')
+        self.mobilenet_v2 = MobileNetV2Model(config).from_pretrained('google/mobilenet_v2_1.4_224', local_files_only=True)
 
         last_hidden_size = self.mobilenet_v2.conv_1x1.convolution.out_channels
 
@@ -318,8 +318,11 @@ class MidFusion(torch.nn.Module):
             cfg = ViTConfig()
             self.vit = ViTModel(cfg).from_pretrained('google/vit-base-patch16-224')
             self.vision_dim = self.vit.config.hidden_size
-            #self.vision_dim = self.bert.config.hidden_size
-            #self.vision_proj = torch.nn.LazyLinear(self.dim)
+            if self.bert.config.hidden_size == 1024:  # large bert
+                self.vision_dim = self.bert.config.hidden_size
+                self.vision_proj = torch.nn.LazyLinear(self.dim)
+        else:
+            self.vision_dim = 0
         self.fusion_dim = self.dim + self.vision_dim
         if cross_attn_fusion:
             self.fusion_dim = self.dim
@@ -412,6 +415,9 @@ class MidFusion(torch.nn.Module):
             vision_model_len = len(self.mobilenet_v2.layer)
         elif self.vision_model == 'vit':
             vision_model_len = len(self.vit.layers)
+        elif self.vision_model == 'None':
+            import math
+            vision_model_len = math.inf
 
         # BERT - HIDDEN STATES
         past_key_values, past_key_values_length, hidden_states_bert, attention_mask, encoder_attention_mask = self.bert_embeddings_and_attention_mask(input_ids, position_ids, token_type_ids, inputs_embeds, past_key_values, attention_mask, encoder_hidden_states, encoder_attention_mask)
@@ -449,7 +455,8 @@ class MidFusion(torch.nn.Module):
                         hs_vision = self.vision_proj(hs_vision)
                     elif self.vision_model == 'vit':
                         hs_vision = hidden_states_vision[:, 0, :]
-                        #hs_vision = self.vision_proj(hs_vision)
+                        if self.bert.config.hidden_size == 1024:  # large bert
+                            hs_vision = self.vision_proj(hs_vision)
 
                 if self.cross_attn_fusion:
                     hs_bert, hs_vision = self.cross_attn_layers[j](hidden_states_bert, hs_vision)
@@ -508,12 +515,12 @@ class EarlyFusion(torch.nn.Module):
     """
     Early fusion of vision model (MobileNetV2, ViT) and BERT.
     """
-    def __init__(self, vision_model, bert_model, cross_attn_fusion, num_attn_net_blocks=4):
+    def __init__(self, vision_model, bert_model, cross_attn_fusion, num_attn_net_blocks=4, num_backbone_layers=6):
         super().__init__()
         self.N_CLASSES = 2
         self.vision_model = vision_model
         self.cross_attn_fusion = cross_attn_fusion
-        self.num_backbone_layers = 6
+        self.num_backbone_layers = num_backbone_layers
 
         cfg = BertConfig.from_pretrained(bert_model)
         self.bert = BertModel.from_pretrained(bert_model, config=cfg)
@@ -532,9 +539,11 @@ class EarlyFusion(torch.nn.Module):
             cfg = ViTConfig()
             self.vit = ViTModel(cfg).from_pretrained('google/vit-base-patch16-224')
             self.vision_dim = self.vit.config.hidden_size
-            #self.vision_dim = self.bert.config.hidden_size
-            #self.vision_proj = torch.nn.LazyLinear(self.dim)
-
+            if self.bert.config.hidden_size == 1024:  # large bert
+                self.vision_dim = self.bert.config.hidden_size
+                self.vision_proj = torch.nn.LazyLinear(self.dim)
+        else:
+            self.vision_dim = 0
         self.fusion_dim = self.dim + self.vision_dim
         if cross_attn_fusion:
             self.fusion_dim = self.dim
@@ -647,7 +656,8 @@ class EarlyFusion(torch.nn.Module):
                 hidden_states_vision = self.vision_proj(hidden_states_vision)
             elif self.vision_model == 'vit':
                 hidden_states_vision = hidden_states_vision[:, 0, :]
-                #hidden_states_vision = self.vision_proj(hidden_states_vision)
+                if self.bert.config.hidden_size == 1024:  # large bert
+                    hidden_states_vision = self.vision_proj(hidden_states_vision)
 
         if self.cross_attn_fusion:
             hidden_states_bert, hidden_states_vision = self.cross_attn(hidden_states_bert, hidden_states_vision)
