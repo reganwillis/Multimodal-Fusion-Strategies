@@ -40,7 +40,7 @@ if __name__ == "__main__":
     arch = args.arch
     args.attn_fusion = True
     DEBUG = args.debug
-    BATCH_SIZE = 32
+    BATCH_SIZE = 1
     N_WORKERS = 4
 
     if args.debug:
@@ -93,7 +93,6 @@ if __name__ == "__main__":
     dataloaders = load_dataset(batch_size=BATCH_SIZE, n_workers=N_WORKERS, face_crop=False)
     train_dataloader, val_dataloader, test_dataloader = dataloaders
 
-
     save_path = arch
     if args.bert_model == 'bert-large-uncased':
         save_path = save_path + '_bertlarge'
@@ -104,7 +103,6 @@ if __name__ == "__main__":
     print('Loading model weights for evalution..')
     model.load_state_dict(torch.load(args.weights, weights_only=False, map_location=DEVICE))
     model.to(DEVICE)
-    #model_onnx = rt.InferenceSession(args.weights, providers=providers)
     print('Evaluating model..')
     latency = lib.evaluate_latency(model, arch, test_dataloader, DEVICE, n_trials, warmup)
 

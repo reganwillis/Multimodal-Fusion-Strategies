@@ -234,17 +234,16 @@ def evaluate_latency(model, arch, dataloader, device, trials, warmup):
     total_inf_time = 0.0
 
     with torch.no_grad():
-        #for i in range(trials+warm_up):
-        for i, (images, texts, targets) in enumerate(dataloader):
+        for i, (raw_image, raw_text, raw_label) in enumerate(dataloader):
+
+            #print(f'\nDataset Sample {i}')
+
+            images = raw_image.to(device)
+            ids = raw_text['ids'].to(device, dtype=torch.long)
+            mask = raw_text['mask'].to(device, dtype=torch.long)
+            token_type_ids = raw_text['token_type_ids'].to(device, dtype=torch.long)
+
             start_time = time.time()
-
-            images = images.to(device)
-            targets = targets.to(device)
-
-            ids = texts['ids'].to(device, dtype=torch.long)
-            mask = texts['mask'].to(device, dtype=torch.long)
-            token_type_ids = texts['token_type_ids'].to(device, dtype=torch.long)
-
             if arch == 'mobilenet' or arch == 'vit':
                 outputs = model(images)
             elif arch == 'bert':
@@ -254,8 +253,11 @@ def evaluate_latency(model, arch, dataloader, device, trials, warmup):
 
             if i >= warmup:
                 total_inf_time += time.time()-start_time
+            else:
+                #print('Warmup trial, not included..')
+                pass
 
-            if i == trials:
+            if i >= trials - 1:
                 break
     avg_inf_time = total_inf_time/trials
     print(f'{arch}\t | {avg_inf_time} s')
